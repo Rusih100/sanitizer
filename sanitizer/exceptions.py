@@ -18,3 +18,6 @@ class FieldValidationError(Exception):
         self.field: str = field
         self.message: str = message
         self.location: list[str | int] = location
+
+    def __str__(self) -> str:
+        return f"({self.field}: {self.message}. {self.location})"
