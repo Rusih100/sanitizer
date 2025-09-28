@@ -48,4 +48,5 @@ lint.ignore = [
     "RUF100", # Unused `noqa` directive
     "W291", # Trailing whitespace
     "TC003", # Type-checking block
+    "F401",
 ]
