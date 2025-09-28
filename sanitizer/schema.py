@@ -9,16 +9,16 @@ if TYPE_CHECKING:
 
 
 # TODO: Roadmap
-#   OK 1. Сделать нормальную текстовку ошибок
-#   OK 2. Реализовать метод _validate
-#   3. Добавить поддержку списков и т.д
-#   OK 4. Добавить поддержку структур
-#   5. Изобрести валидатор
-#   6. Написать тесты
+#   1. Добавить поддержку списков и т.д
+#   2. Изобрести валидатор
+#   3. Написать тесты
 
 
 type FieldName = str
 type FieldValue = Any
+
+type FieldsMapping = dict[FieldName, FieldValue]
+type TypeHintsMapping = dict[FieldName, Any]
 
 
 class Schema:
@@ -42,7 +42,7 @@ class Schema:
             setattr(self, k, v)
 
     @classmethod
-    def validate(cls, fields: dict[FieldName, FieldValue]) -> Self:
+    def validate(cls, fields: FieldsMapping) -> Self:
         """
         Метод для валидации входных данных. Возвращает готовый экземпляр схемы.
 
@@ -52,70 +52,101 @@ class Schema:
         return cls(**fields)
 
     @classmethod
-    def _validate(
-        cls, fields: dict[FieldName, FieldValue]
-    ) -> tuple[dict[FieldName, FieldValue], list[FieldValidationError]]:
+    def _validate(cls, fields: FieldsMapping) -> tuple[FieldsMapping, list[FieldValidationError]]:
         """
         Базовый метод для валидации и нормализации переданной сущности по заданным type hints в схеме.
 
         :returns: Словарь нормализованных данных, список ошибок
         """
 
-        values: dict[FieldName, FieldValue] = {}
         errors: list[FieldValidationError] = []
-
         type_hints = get_type_hints(cls)
 
-        missing_fields = type_hints.keys() - fields.keys()
+        errors += cls._validate_missing_fields(fields, type_hints)
+        errors += cls._validate_disallowed_fields(fields, type_hints)
+        validated_fields, errors = cls._validate_allowed_fields(fields, type_hints)
+
+        return validated_fields, errors
+
+    @staticmethod
+    def _validate_missing_fields(fields: FieldsMapping, type_hints: TypeHintsMapping) -> list[FieldValidationError]:
+        """
+        Метод для валидации пропущенных полей схемы.
+        """
+
+        errors: list[FieldValidationError] = []
+        missing_fields: set[FieldName] = type_hints.keys() - fields.keys()
+
         for field in missing_fields:
             errors.append(
                 FieldValidationError(
-                    field,
-                    "Обязательное поле не передано",
-                    [field],
+                    field=field,
+                    message="Обязательное поле не передано",
+                    location=[field],
                 )
             )
+        return errors
 
-        disallowed_fields = fields.keys() - type_hints.keys()
+    @staticmethod
+    def _validate_disallowed_fields(fields: FieldsMapping, type_hints: TypeHintsMapping) -> list[FieldValidationError]:
+        """
+        Метод для валидации неразрешенных полей схемы.
+        """
+
+        errors: list[FieldValidationError] = []
+        disallowed_fields: set[FieldName] = fields.keys() - type_hints.keys()
+
         for field in disallowed_fields:
             errors.append(
                 FieldValidationError(
-                    field,
-                    "Поле не предусмотрено схемой",
-                    [field],
+                    field=field,
+                    message="Поле не предусмотрено схемой",
+                    location=[field],
                 )
             )
+        return errors
 
-        allowed_fields = type_hints.keys() & fields.keys()
+    @staticmethod
+    def _validate_allowed_fields(
+        fields: FieldsMapping, type_hints: TypeHintsMapping
+    ) -> tuple[FieldsMapping, list[FieldValidationError]]:
+        """
+        Метод для валидации разрешенных полей схемы.
+        """
+
+        errors: list[FieldValidationError] = []
+        allowed_fields: set[FieldName] = type_hints.keys() & fields.keys()
+        validated_fields: FieldsMapping = {}
+
         for field in allowed_fields:
             value = fields[field]
             expected_type = type_hints[field]
 
             if issubclass(expected_type, Schema):
                 if isinstance(value, expected_type):
-                    values[field] = value
+                    validated_fields[field] = value
                     continue
 
                 if isinstance(value, dict):
                     try:
-                        values[field] = expected_type(**value)
+                        validated_fields[field] = expected_type(**value)
                         continue
                     except ValidationError as group:
                         for exc in group.exceptions:
                             errors.append(
                                 FieldValidationError(
-                                    exc.field,
-                                    exc.message,
-                                    [field, *exc.location],
+                                    field=exc.field,
+                                    message=exc.message,
+                                    location=[field, *exc.location],
                                 )
                             )
                         continue
 
                 errors.append(
                     FieldValidationError(
-                        field,
-                        f"Ожидался {expected_type.__name__} или dict, передано {type(value).__name__}",
-                        [field],
+                        field=field,
+                        message=f"Ожидался {expected_type.__name__} или dict, передано {type(value).__name__}",
+                        location=[field],
                     )
                 )
                 continue
@@ -123,14 +154,13 @@ class Schema:
             if not isinstance(value, expected_type):
                 errors.append(
                     FieldValidationError(
-                        field,
-                        f"Ожидалось {expected_type.__name__}, передано {type(value).__name__}",
-                        [field],
+                        field=field,
+                        message=f"Ожидалось {expected_type.__name__}, передано {type(value).__name__}",
+                        location=[field],
                     )
                 )
                 continue
 
-            values[field] = value
+            validated_fields[field] = value
 
-        return values, errors
-
+        return validated_fields, errors
