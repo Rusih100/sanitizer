@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin, get_type_hints
 
 from sanitizer.exceptions import FieldValidationError, ValidationError
 
@@ -55,7 +55,7 @@ class Schema:
         """
 
         errors: list[FieldValidationError] = []
-        type_hints = get_type_hints(cls)
+        type_hints = get_type_hints(cls, include_extras=True)
 
         errors += cls._validate_missing_fields(fields, type_hints)
         errors += cls._validate_disallowed_fields(fields, type_hints)
@@ -151,6 +151,10 @@ class Schema:
         # Проверка на Any
         if expected_type is Any:
             return cls._resolve_any_type(field, value, expected_type)
+
+        # Проверка кастомных валидаторов
+        if get_origin(expected_type) is Annotated:
+            return cls._resolve_validators(field, value, expected_type)
 
         # Проверка на списки
         if get_origin(expected_type) is list:
@@ -321,3 +325,37 @@ class Schema:
                 location=[field],
             )
         ]
+
+    @classmethod
+    def _resolve_validators(
+        cls, field: FieldName, value: FieldValue, expected_type: Any
+    ) -> tuple[FieldValue | ellipsis, list[FieldValidationError]]:
+        """
+        Резолвер для кастомных валидаторов через Annotate
+
+        :returns: Нормализованное значение для поля, список ошибок валидации
+        """
+
+        base_type, *validators = get_args(expected_type)
+        value, errors = cls._check_field_type(field, value, base_type)
+
+        if errors:
+            return ..., errors
+
+        validator_errors: list[FieldValidationError] = []
+        for validator in validators:
+            try:
+                value = validator(value)
+            except Exception as exc:
+                validator_errors.append(
+                    FieldValidationError(
+                        field=field,
+                        message=f"Ошибка валидатора {validator.__name__}: {exc}",
+                        location=[field],
+                    )
+                )
+
+        if validator_errors:
+            return ..., validator_errors
+
+        return value, []
