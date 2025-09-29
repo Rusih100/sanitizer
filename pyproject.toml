@@ -49,4 +49,5 @@ lint.ignore = [
     "W291", # Trailing whitespace
     "TC003", # Type-checking block
     "F401",
+    "S101"
 ]
