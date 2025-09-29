@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, get_type_hints
+from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
 from sanitizer.exceptions import FieldValidationError, ValidationError
 
 if TYPE_CHECKING:
-    from typing import Any, Self
+    from typing import Self
 
 
 # TODO: Roadmap
@@ -34,12 +34,13 @@ class Schema:
         :raise ValidationError: Ошибка валидации схемы.
         """
 
-        values, errors = type(self)._validate(fields)
-        if errors:
-            raise ValidationError(f"{type(self).__name__}: validation failed", errors)
+        values, errors = type(self)._run_validators(fields)
 
         for k, v in values.items():
             setattr(self, k, v)
+
+        if errors:
+            raise ValidationError(f"{type(self).__name__}: validation failed", errors)
 
     @classmethod
     def validate(cls, fields: FieldsMapping) -> Self:
@@ -52,7 +53,7 @@ class Schema:
         return cls(**fields)
 
     @classmethod
-    def _validate(cls, fields: FieldsMapping) -> tuple[FieldsMapping, list[FieldValidationError]]:
+    def _run_validators(cls, fields: FieldsMapping) -> tuple[FieldsMapping, list[FieldValidationError]]:
         """
         Базовый метод для валидации и нормализации переданной сущности по заданным type hints в схеме.
 
@@ -64,7 +65,9 @@ class Schema:
 
         errors += cls._validate_missing_fields(fields, type_hints)
         errors += cls._validate_disallowed_fields(fields, type_hints)
-        validated_fields, errors = cls._validate_allowed_fields(fields, type_hints)
+
+        validated_fields, fields_errors = cls._validate_allowed_fields(fields, type_hints)
+        errors += fields_errors
 
         return validated_fields, errors
 
@@ -106,9 +109,9 @@ class Schema:
             )
         return errors
 
-    @staticmethod
+    @classmethod
     def _validate_allowed_fields(
-        fields: FieldsMapping, type_hints: TypeHintsMapping
+        cls, fields: FieldsMapping, type_hints: TypeHintsMapping
     ) -> tuple[FieldsMapping, list[FieldValidationError]]:
         """
         Метод для валидации разрешенных полей схемы.
@@ -122,45 +125,80 @@ class Schema:
             value = fields[field]
             expected_type = type_hints[field]
 
-            if issubclass(expected_type, Schema):
-                if isinstance(value, expected_type):
-                    validated_fields[field] = value
-                    continue
+            validated_value, validation_errors = cls._check_field_type(field, value, expected_type)
 
-                if isinstance(value, dict):
-                    try:
-                        validated_fields[field] = expected_type(**value)
-                        continue
-                    except ValidationError as group:
-                        for exc in group.exceptions:
-                            errors.append(
-                                FieldValidationError(
-                                    field=exc.field,
-                                    message=exc.message,
-                                    location=[field, *exc.location],
-                                )
-                            )
-                        continue
-
-                errors.append(
-                    FieldValidationError(
-                        field=field,
-                        message=f"Ожидался {expected_type.__name__} или dict, передано {type(value).__name__}",
-                        location=[field],
-                    )
-                )
-                continue
-
-            if not isinstance(value, expected_type):
-                errors.append(
-                    FieldValidationError(
-                        field=field,
-                        message=f"Ожидалось {expected_type.__name__}, передано {type(value).__name__}",
-                        location=[field],
-                    )
-                )
-                continue
-
-            validated_fields[field] = value
+            validated_fields[field] = validated_value
+            errors += validation_errors
 
         return validated_fields, errors
+
+    @staticmethod
+    def _check_field_type(
+        field: FieldName, value: FieldValue, expected_type: Any
+    ) -> tuple[FieldValue | ellipsis, list[FieldValidationError]]:
+        """
+        Метод для проверки на соответствие типов и нормализации конкретного типов полей:
+        - Any
+        - Скалярные значения: (int, float, str, bool, ...)
+        - Schema
+        - Списки
+
+        Если поле провалидировано с ошибкой будет проставлен ellipsis (...)
+
+        :returns: Нормализованное значение для поля, ошибка валидации при наличии
+        """
+
+        # Проверка на Any
+        if expected_type is Any:
+            return value, []
+
+        # Проверка на сложные typing типы
+        if get_origin(expected_type) is not None:
+            return ..., [
+                FieldValidationError(
+                    field=field,
+                    message=f"Переданный тип не поддерживается: {expected_type!r}",
+                    location=[field],
+                )
+            ]
+
+        # Проверка, что объект - класс
+        if not isinstance(expected_type, type):
+            return ..., [
+                FieldValidationError(
+                    field=field,
+                    message=f"Переданный тип является классом: {expected_type!r}",
+                    location=[field],
+                )
+            ]
+
+        # Проверка вложенных схем
+        if issubclass(expected_type, Schema):
+            if isinstance(value, expected_type):
+                return value, []
+
+            if isinstance(value, dict):
+                try:
+                    return expected_type(**value), []
+                except ValidationError as exc:
+                    return ..., [
+                        FieldValidationError(
+                            field=exc.field,
+                            message=exc.message,
+                            location=[field, *exc.location],
+                        )
+                        for exc in exc.exceptions
+                    ]
+
+        # Обычные типы
+        if not isinstance(value, expected_type):
+            return ..., [
+                FieldValidationError(
+                    field=field,
+                    message=f"Ожидалось {expected_type.__name__}, передано {type(value).__name__}",
+                    location=[field],
+                )
+            ]
+
+        return value, []
+

@@ -15,6 +15,7 @@ class Car(Schema):
     speed: int
 
 
+
 car = Car.validate(
     {
         "driver": {
