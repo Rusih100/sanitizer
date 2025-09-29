@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from sanitizer.exceptions import FieldValidationError, ValidationError
 
@@ -132,9 +132,9 @@ class Schema:
 
         return validated_fields, errors
 
-    @staticmethod
-    def _check_field_type(
-        field: FieldName, value: FieldValue, expected_type: Any
+    @classmethod
+    def _check_field_type(  # noqa C901
+        cls, field: FieldName, value: FieldValue, expected_type: Any
     ) -> tuple[FieldValue | ellipsis, list[FieldValidationError]]:
         """
         Метод для проверки на соответствие типов и нормализации конкретного типов полей:
@@ -145,12 +145,40 @@ class Schema:
 
         Если поле провалидировано с ошибкой будет проставлен ellipsis (...)
 
-        :returns: Нормализованное значение для поля, ошибка валидации при наличии
+        :returns: Нормализованное значение для поля, список ошибок валидации при наличии
         """
 
         # Проверка на Any
         if expected_type is Any:
             return value, []
+
+        # Проверка на списки
+        if get_origin(expected_type) is list:
+            item_type = get_args(expected_type)[0]
+
+            if not isinstance(value, list):
+                return ..., [
+                    FieldValidationError(
+                        field=field,
+                        message=f"Ожидался список {expected_type!r}, получено {type(value).__name__}",
+                        location=[field],
+                    )
+                ]
+
+            validated_list: list[Any] = []
+            errors: list[FieldValidationError] = []
+
+            for index, item in enumerate(value):
+                validated_item, item_errors = cls._check_field_type(field, item, item_type)
+                if item_errors:
+                    for error in item_errors:
+                        error.location.insert(1, index)
+                    errors.extend(item_errors)
+                    validated_list.append(...)
+                else:
+                    validated_list.append(validated_item)
+
+            return validated_list, errors
 
         # Проверка на сложные typing типы
         if get_origin(expected_type) is not None:
@@ -201,4 +229,3 @@ class Schema:
             ]
 
         return value, []
-
